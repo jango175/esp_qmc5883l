@@ -108,6 +108,7 @@ static void isr_handler(void* arg)
 */
 void qmc5883l_init(qmc5883l_conf_t qmc)
 {
+#ifdef QMC5883L_I2C_INIT
     if (qmc.i2c_freq > QMC5883L_MAX_FREQ)
     {
         qmc.i2c_freq = QMC5883L_MAX_FREQ;
@@ -126,6 +127,7 @@ void qmc5883l_init(qmc5883l_conf_t qmc)
 
     ESP_ERROR_CHECK(i2c_param_config(qmc.i2c_port, &i2c_config));
     ESP_ERROR_CHECK(i2c_driver_install(qmc.i2c_port, i2c_config.mode, 0, 0, 0));
+#endif
 
     // interrupt mode
     if (qmc.drdy_pin != -1)

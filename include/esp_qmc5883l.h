@@ -7,6 +7,8 @@
 #include "driver/i2c.h"
 #include "esp_log.h"
 
+// #define QMC5883L_I2C_INIT            1 // uncomment to initialize I2C driver
+
 // compensation values (paste your calibration values here)
 #define QMC5883L_X_OFFSET            2897.0f
 #define QMC5883L_Y_OFFSET            1369.5f
