@@ -1,14 +1,13 @@
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "esp_log.h"
 
 #define QMC5883L_MAX_FREQ      400000
-
 #define QMC5883L_TIMEOUT       (100 / portTICK_PERIOD_MS)
-
 #define QMC5883L_ADDR          0x0D
 
 // register map
@@ -27,6 +26,7 @@
 #define QMC_CHIP_ID_REG        0x0D // Chip ID Register Read
 
 #define QMC_RESET              0x80
+#define QMC_PERIOD             0x01
 
 enum qmc5883l_mode
 {
@@ -56,6 +56,17 @@ enum qmc5883l_over_sample_ratio
     QMC5883L_OVER_SAMPLE_RATIO_64
 };
 
+enum qmc5883l_pointer_rollover_function
+{
+    QMC5883L_POINTER_ROLLOVER_FUNCTION_NORMAL = 0,
+    QMC5883L_POINTER_ROLLOVER_FUNCTION_ENABLE
+};
+
+enum qmc5883l_interrupt
+{
+    QMC5883L_INTERRUPT_ENABLE = 0,
+    QMC5883L_INTERRUPT_DISABLE
+};
 
 // QMC5883L configuration struct
 typedef struct qmc5883l_conf_t
@@ -72,8 +83,21 @@ void qmc5883l_init(qmc5883l_conf_t qmc);
 
 void qmc5883l_soft_reset(qmc5883l_conf_t qmc);
 
-void qmc5883l_configure(qmc5883l_conf_t qmc, enum qmc5883l_over_sample_ratio over_sample_ratio,
-                            enum qmc5883l_full_scale full_scale, enum qmc5883l_data_output_rate output_rate,
-                            enum qmc5883l_mode mode);
-
 void qmc5883l_read_magnetometer(qmc5883l_conf_t qmc, int16_t* x, int16_t* y, int16_t* z);
+
+void qmc5883l_read_status(qmc5883l_conf_t qmc, uint8_t* status);
+
+void qmc5883l_read_termometer(qmc5883l_conf_t qmc, int16_t* temp);
+
+void qmc5883l_write_control(qmc5883l_conf_t qmc, enum qmc5883l_over_sample_ratio over_sample_ratio,
+                            enum qmc5883l_full_scale full_scale, enum qmc5883l_data_output_rate output_rate,
+                            enum qmc5883l_mode mode, enum qmc5883l_pointer_rollover_function rol_pnt,
+                            enum qmc5883l_interrupt int_enable);
+
+void qmc5883l_read_control_1(qmc5883l_conf_t qmc, uint8_t* control_1);
+
+void qmc5883l_read_control_2(qmc5883l_conf_t qmc, uint8_t* control_2);
+
+void qmc5883l_write_set_reset_period_FBR(qmc5883l_conf_t qmc);
+
+void qmc5883l_read_chip_id(qmc5883l_conf_t qmc, uint8_t* chip_id);
