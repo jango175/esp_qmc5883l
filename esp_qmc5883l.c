@@ -1,9 +1,12 @@
 #include <stdio.h>
 #include "esp_qmc5883l.h"
 
-static const char* TAG = "QMC5883L";
+static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+bool measurement_ready = false;
 
-static QueueHandle_t mag_xyz_queue = NULL;
+static bool compensation = false;
+
+static const char* TAG = "QMC5883L";
 
 
 /**
@@ -92,18 +95,9 @@ static void i2c_read(qmc5883l_conf_t qmc, uint8_t reg, uint8_t* data, uint32_t d
 */
 static void isr_handler(void* arg)
 {
-    qmc5883l_conf_t qmc = *(qmc5883l_conf_t*)arg;
-
-    uint8_t data[6];
-    i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
-
-    int16_t mag[3];
-    mag[0] = (int16_t)data[1] << 8 | (int16_t)data[0];
-    mag[1] = (int16_t)data[3] << 8 | (int16_t)data[2];
-    mag[2] = (int16_t)data[5] << 8 | (int16_t)data[4];
-
-    if (xQueueSend(mag_xyz_queue, mag, QMC5883L_TIMEOUT) != pdTRUE)
-        ESP_LOGE(TAG, "Failed to send data to queue");
+    portENTER_CRITICAL(&mux);
+    measurement_ready = true;
+    portEXIT_CRITICAL(&mux);
 }
 
 
@@ -136,13 +130,6 @@ void qmc5883l_init(qmc5883l_conf_t qmc)
     // interrupt mode
     if (qmc.drdy_pin != -1)
     {
-        mag_xyz_queue = xQueueCreate(1, sizeof(int16_t) * 3);
-        if (mag_xyz_queue == NULL)
-        {
-            ESP_LOGE(TAG, "Failed to create queue");
-            return;
-        }
-
         gpio_config_t io_conf;
         io_conf.intr_type = GPIO_INTR_NEGEDGE;
         io_conf.mode = GPIO_MODE_INPUT;
@@ -176,33 +163,27 @@ void qmc5883l_soft_reset(qmc5883l_conf_t qmc)
 
 
 /**
- * @brief read magnetometer data
+ * @brief read magnetometer raw data
  * 
  * @param qmc struct with QMC5883L parameters
  * @param x pointer to x axis data
  * @param y pointer to y axis data
  * @param z pointer to z axis data
 */
-void qmc5883l_read_magnetometer(qmc5883l_conf_t qmc, int16_t* x, int16_t* y, int16_t* z)
+void qmc5883l_read_raw_magnetometer(qmc5883l_conf_t qmc, int16_t* x, int16_t* y, int16_t* z)
 {
+    uint8_t data[6];
+    i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
+
+    *x = (int16_t)data[1] << 8 | (int16_t)data[0];
+    *y = (int16_t)data[3] << 8 | (int16_t)data[2];
+    *z = (int16_t)data[5] << 8 | (int16_t)data[4];
+
     if (qmc.drdy_pin != -1)
     {
-        int16_t mag[3];
-        if (xQueueReceive(mag_xyz_queue, mag, portMAX_DELAY) != pdTRUE)
-            ESP_LOGE(TAG, "Failed to receive data from queue");
-
-        *x = mag[0];
-        *y = mag[1];
-        *z = mag[2];
-    }
-    else
-    {
-        uint8_t data[6];
-        i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
-
-        *x = (int16_t)data[1] << 8 | (int16_t)data[0];
-        *y = (int16_t)data[3] << 8 | (int16_t)data[2];
-        *z = (int16_t)data[5] << 8 | (int16_t)data[4];
+        portENTER_CRITICAL(&mux);
+        measurement_ready = false;
+        portEXIT_CRITICAL(&mux);
     }
 }
 
@@ -413,4 +394,138 @@ void qmc5883l_write_set_reset_period_FBR(qmc5883l_conf_t qmc)
 void qmc5883l_read_chip_id(qmc5883l_conf_t qmc, uint8_t* chip_id)
 {
     i2c_read(qmc, QMC_CHIP_ID_REG, chip_id, 1);
+}
+
+
+/**
+ * @brief calibrate QMC5883L (10 seconds of stable measurements)
+ * 
+ * @param qmc struct with QMC5883L parameters
+*/
+void qmc5883l_calibrate(qmc5883l_conf_t qmc)
+{
+    portENTER_CRITICAL(&mux);
+    compensation = true;
+    portEXIT_CRITICAL(&mux);
+
+    int16_t mag_cal[3][2]; // 0 - min, 1 - max
+    for (uint32_t i = 0; i < 3; i++)
+    {
+        mag_cal[i][0] = 32767;
+        mag_cal[i][1] = -32768;
+    }
+
+    int16_t mag_val[3] = {0, 0, 0};
+    bool is_changed[3] = {false, false, false};
+    uint32_t count = 0;
+
+    ESP_LOGW(TAG, "Calibration started - move the sensor in all directions...");
+
+    while (count < 1000) // while measurements are not stable for 10 seconds
+    {
+        qmc5883l_read_raw_magnetometer(qmc, mag_val, mag_val + 1, mag_val + 2);
+
+        for (uint8_t i = 0; i < 3; i++)
+        {
+            if (mag_val[i] < mag_cal[i][0])
+            {
+                mag_cal[i][0] = mag_val[i];
+                is_changed[i] = true;
+            }
+            else
+                is_changed[i] = false;
+
+            if (mag_val[i] > mag_cal[i][1])
+            {
+                mag_cal[i][1] = mag_val[i];
+                is_changed[i] = true;
+            }
+            else
+                is_changed[i] = false;
+        }
+
+        if (is_changed[0] == false && is_changed[1] == false && is_changed[2] == false)
+            count++;
+        else
+            count = 0;
+
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+
+    // calculate compensation values
+    float avg_delta[3];
+    float cal_offset[3];
+    float cal_scale[3];
+
+    for (uint32_t i = 0; i < 3; i++)
+        avg_delta[i] = (float)(mag_cal[i][1] - mag_cal[i][0]) / 2.0f;
+
+    float total_avg_delta = (avg_delta[0] + avg_delta[1] + avg_delta[2]) / 3.0f;
+
+    for (uint32_t i = 0; i < 3; i++)
+    {
+        cal_offset[i] = (mag_cal[i][0] + mag_cal[i][1]) / 2.0f;
+        cal_scale[i] = total_avg_delta / avg_delta[i];
+    }
+
+    ESP_LOGW(TAG, "Calibration ended");
+
+    ESP_LOGI(TAG, "Paste these values to esp_qmc5883l.h compensation values section:");
+    ESP_LOGI(TAG, "#define QMC5883L_X_OFFSET            %f", cal_offset[0]);
+    ESP_LOGI(TAG, "#define QMC5883L_Y_OFFSET            %f", cal_offset[1]);
+    ESP_LOGI(TAG, "#define QMC5883L_Z_OFFSET            %f", cal_offset[2]);
+
+    ESP_LOGI(TAG, "#define QMC5883L_X_SCALE             %f", cal_scale[0]);
+    ESP_LOGI(TAG, "#define QMC5883L_Y_SCALE             %f", cal_scale[1]);
+    ESP_LOGI(TAG, "#define QMC5883L_Z_SCALE             %f", cal_scale[2]);
+}
+
+
+/**
+ * @brief get azimuth (XY plane) from magnetometer readings
+ *
+ * @param qmc struct with QMC5883L parameters
+ *
+ * @return azimuth
+*/
+int32_t qmc5883l_get_azimuth(qmc5883l_conf_t qmc)
+{
+    float x, y, z;
+    qmc5883l_read_magnetometer(qmc, &x, &y, &z);
+
+    float heading = atan2(y, x) * 180.0 / M_PI;
+    heading += QMC5883L_MAG_DEC_DEG;
+
+    return (int32_t)heading % 360;
+}
+
+
+/**
+ * @brief read magnetometer compensated data
+ * 
+ * @param qmc struct with QMC5883L parameters
+ * @param x pointer to x axis data
+ * @param y pointer to y axis data
+ * @param z pointer to z axis data
+*/
+void qmc5883l_read_magnetometer(qmc5883l_conf_t qmc, float* x, float* y, float* z)
+{
+    uint8_t data[6];
+    i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
+
+    int16_t x_raw, y_raw, z_raw;
+    x_raw = (int16_t)data[1] << 8 | (int16_t)data[0];
+    y_raw = (int16_t)data[3] << 8 | (int16_t)data[2];
+    z_raw = (int16_t)data[5] << 8 | (int16_t)data[4];
+
+    *x = ((float)x_raw - QMC5883L_X_OFFSET) * QMC5883L_X_SCALE;
+    *y = ((float)y_raw - QMC5883L_Y_OFFSET) * QMC5883L_Y_SCALE;
+    *z = ((float)z_raw - QMC5883L_Z_OFFSET) * QMC5883L_Z_SCALE;
+
+    if (qmc.drdy_pin != -1)
+    {
+        portENTER_CRITICAL(&mux);
+        measurement_ready = false;
+        portEXIT_CRITICAL(&mux);
+    }
 }
