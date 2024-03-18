@@ -1,3 +1,11 @@
+/**
+ * @file esp_qmc5883l.c
+ * @author JanG175
+ * @brief ESP-IDF component for QMC5883L magnetometer
+ * 
+ * @copyright Apache 2.0
+*/
+
 #include <stdio.h>
 #include "esp_qmc5883l.h"
 
