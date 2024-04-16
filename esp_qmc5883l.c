@@ -14,86 +14,14 @@ bool measurement_ready = false;
 
 static bool compensation = false;
 
+#ifdef QMC5883L_I2C_INIT
+static i2c_master_bus_handle_t bus_handle;
+#else
+extern i2c_master_bus_handle_t bus_handle;
+#endif
+static i2c_master_dev_handle_t dev_handle;
+
 static const char* TAG = "QMC5883L";
-
-
-/**
- * @brief send data to QMC5883L register
- * 
- * @param qmc struct with QMC5883L parameters
- * @param reg register to write to
- * @param data pointer data to write
- * @param data_len length of data to write
-*/
-static void i2c_send(qmc5883l_conf_t qmc, uint8_t reg, uint8_t* data, uint32_t data_len)
-{
-    esp_err_t err;
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-
-    err = i2c_master_start(cmd);
-    assert(err == ESP_OK);
-
-    err = i2c_master_write_byte(cmd, (QMC5883L_ADDR << 1) | I2C_MASTER_WRITE, true);
-    assert(err == ESP_OK);
-
-    for (uint32_t i = 0; i < data_len; i++)
-    {
-        err = i2c_master_write_byte(cmd, reg + i, true);
-        assert(err == ESP_OK);
-
-        err = i2c_master_write_byte(cmd, *(data + i), true);
-        assert(err == ESP_OK);
-    }
-
-    err = i2c_master_stop(cmd);
-    assert(err == ESP_OK);
-
-    err = i2c_master_cmd_begin(qmc.i2c_port, cmd, QMC5883L_TIMEOUT);
-    assert(err == ESP_OK);
-
-    i2c_cmd_link_delete(cmd);
-}
-
-
-/**
- * @brief read data from QMC5883L register
- * 
- * @param qmc struct with QMC5883L parameters
- * @param reg register to read from
- * @param data pointer to data to read
- * @param data_len length of data to read
-*/
-static void i2c_read(qmc5883l_conf_t qmc, uint8_t reg, uint8_t* data, uint32_t data_len)
-{
-    esp_err_t err;
-    i2c_cmd_handle_t cmd = i2c_cmd_link_create();
-
-    err = i2c_master_start(cmd);
-    assert(err == ESP_OK);
-
-    err = i2c_master_write_byte(cmd, (QMC5883L_ADDR << 1) | I2C_MASTER_WRITE, true);
-    assert(err == ESP_OK);
-
-    err = i2c_master_write_byte(cmd, reg, true);
-    assert(err == ESP_OK);
-
-    err = i2c_master_start(cmd);
-    assert(err == ESP_OK);
-
-    err = i2c_master_write_byte(cmd, (QMC5883L_ADDR << 1) | I2C_MASTER_READ, true);
-    assert(err == ESP_OK);
-
-    err = i2c_master_read(cmd, data, data_len, I2C_MASTER_LAST_NACK);
-    assert(err == ESP_OK);
-
-    err = i2c_master_stop(cmd);
-    assert(err == ESP_OK);
-
-    err = i2c_master_cmd_begin(qmc.i2c_port, cmd, QMC5883L_TIMEOUT);
-    assert(err == ESP_OK);
-
-    i2c_cmd_link_delete(cmd);
-}
 
 
 /**
@@ -112,7 +40,7 @@ static void isr_handler(void* arg)
 /**
  * @brief initialize QMC5883L
  * 
- * @param bmp struct with BMP280 parameters
+ * @param qmc struct with QMC5883L parameters
 */
 void qmc5883l_init(qmc5883l_conf_t qmc)
 {
@@ -123,19 +51,23 @@ void qmc5883l_init(qmc5883l_conf_t qmc)
         ESP_LOGW(TAG, "I2C frequency too high, set to value: %d Hz", QMC5883L_MAX_FREQ);
     }
 
-    i2c_config_t i2c_config = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = qmc.sda_pin,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+    i2c_master_bus_config_t i2c_mst_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = qmc.i2c_port,
         .scl_io_num = qmc.scl_pin,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = qmc.i2c_freq,
-        .clk_flags = 0
+        .sda_io_num = qmc.sda_pin,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true
     };
-
-    ESP_ERROR_CHECK(i2c_param_config(qmc.i2c_port, &i2c_config));
-    ESP_ERROR_CHECK(i2c_driver_install(qmc.i2c_port, i2c_config.mode, 0, 0, 0));
+    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_mst_config, &bus_handle));
 #endif
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = QMC5883L_ADDR,
+        .scl_speed_hz = qmc.i2c_freq
+    };
+    ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_cfg, &dev_handle));
 
     // interrupt mode
     if (qmc.drdy_pin != -1)
@@ -165,8 +97,8 @@ void qmc5883l_init(qmc5883l_conf_t qmc)
 */
 void qmc5883l_soft_reset(qmc5883l_conf_t qmc)
 {
-    uint8_t reset = QMC_RESET;
-    i2c_send(qmc, QMC_CONTROL_2_REG, &reset, 1);
+    uint8_t data[2] = {QMC_CONTROL_2_REG, QMC_RESET};
+    ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data, 2, QMC5883L_TIMEOUT_MS));
 
     vTaskDelay(10 / portTICK_PERIOD_MS);
 }
@@ -183,7 +115,8 @@ void qmc5883l_soft_reset(qmc5883l_conf_t qmc)
 void qmc5883l_read_raw_magnetometer(qmc5883l_conf_t qmc, int16_t* x, int16_t* y, int16_t* z)
 {
     uint8_t data[6];
-    i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
+    uint8_t reg = QMC_DATA_OUT_X_LSB_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, data, 6, QMC5883L_TIMEOUT_MS));
 
     *x = (int16_t)data[1] << 8 | (int16_t)data[0];
     *y = (int16_t)data[3] << 8 | (int16_t)data[2];
@@ -206,7 +139,8 @@ void qmc5883l_read_raw_magnetometer(qmc5883l_conf_t qmc, int16_t* x, int16_t* y,
 */
 void qmc5883l_read_status(qmc5883l_conf_t qmc, uint8_t* status)
 {
-    i2c_read(qmc, QMC_STATUS_REG, status, 1);
+    uint8_t reg = QMC_STATUS_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, status, 1, QMC5883L_TIMEOUT_MS));
 
     uint8_t dor = (*status & (1 << 2)) >> 2;
     uint8_t ovl = (*status & (1 << 1)) >> 1;
@@ -238,7 +172,8 @@ void qmc5883l_read_status(qmc5883l_conf_t qmc, uint8_t* status)
 void qmc5883l_read_termometer(qmc5883l_conf_t qmc, int16_t* temp)
 {
     uint8_t data[2];
-    i2c_read(qmc, QMC_TEMP_DATA_LSB_REG, data, 2);
+    uint8_t reg = QMC_TEMP_DATA_LSB_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, data, 2, QMC5883L_TIMEOUT_MS));
 
     *temp = (int16_t)data[1] << 8 | (int16_t)data[0];
 }
@@ -265,11 +200,16 @@ void qmc5883l_write_control(qmc5883l_conf_t qmc, enum qmc5883l_over_sample_ratio
     // set control register 1
 
     uint8_t control = (uint8_t)over_sample_ratio << 6 | (uint8_t)full_scale << 4 | (uint8_t)output_rate << 2 | (uint8_t)mode;
-    i2c_send(qmc, QMC_CONTROL_1_REG, &control, 1);
+    uint8_t data[2] = {QMC_CONTROL_1_REG, control};
+    ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data, 2, QMC5883L_TIMEOUT_MS));
+
+    vTaskDelay(1);
 
     // set control register 2
 
-    i2c_read(qmc, QMC_CONTROL_2_REG, &control, 1);
+    uint8_t reg = QMC_CONTROL_2_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, &control, 1, QMC5883L_TIMEOUT_MS));
+
     vTaskDelay(1);
 
     if (rol_pnt == QMC5883L_POINTER_ROLLOVER_FUNCTION_NORMAL)
@@ -282,7 +222,9 @@ void qmc5883l_write_control(qmc5883l_conf_t qmc, enum qmc5883l_over_sample_ratio
     else if (int_enable == QMC5883L_INTERRUPT_DISABLE)
         control |= 1;
 
-    i2c_send(qmc, QMC_CONTROL_2_REG, &control, 1);
+    data[0] = QMC_CONTROL_2_REG;
+    data[1] = control;
+    ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data, 2, QMC5883L_TIMEOUT_MS));
 }
 
 
@@ -294,7 +236,8 @@ void qmc5883l_write_control(qmc5883l_conf_t qmc, enum qmc5883l_over_sample_ratio
 */
 void qmc5883l_read_control_1(qmc5883l_conf_t qmc, uint8_t* control_1)
 {
-    i2c_read(qmc, QMC_CONTROL_1_REG, control_1, 1);
+    uint8_t reg = QMC_CONTROL_1_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, control_1, 1, QMC5883L_TIMEOUT_MS));
 
     uint8_t osr = *control_1 >> 6;
     uint8_t rng  = *control_1 << 2;
@@ -366,7 +309,8 @@ void qmc5883l_read_control_1(qmc5883l_conf_t qmc, uint8_t* control_1)
 */
 void qmc5883l_read_control_2(qmc5883l_conf_t qmc, uint8_t* control_2)
 {
-    i2c_read(qmc, QMC_CONTROL_2_REG, control_2, 1);
+    uint8_t reg = QMC_CONTROL_2_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, control_2, 1, QMC5883L_TIMEOUT_MS));
 
     uint8_t rol = (*control_2 & (1 << 6)) >> 6;
     uint8_t int_en = *control_2 & 1;
@@ -390,8 +334,8 @@ void qmc5883l_read_control_2(qmc5883l_conf_t qmc, uint8_t* control_2)
 */
 void qmc5883l_write_set_reset_period_FBR(qmc5883l_conf_t qmc)
 {
-    uint8_t period = QMC_PERIOD;
-    i2c_read(qmc, QMC_PERIOD_REG, &period, 1);
+    uint8_t data[2] = {QMC_PERIOD_REG, QMC_PERIOD};
+    ESP_ERROR_CHECK(i2c_master_transmit(dev_handle, data, 2, QMC5883L_TIMEOUT_MS));
 }
 
 
@@ -403,7 +347,8 @@ void qmc5883l_write_set_reset_period_FBR(qmc5883l_conf_t qmc)
 */
 void qmc5883l_read_chip_id(qmc5883l_conf_t qmc, uint8_t* chip_id)
 {
-    i2c_read(qmc, QMC_CHIP_ID_REG, chip_id, 1);
+    uint8_t reg = QMC_CHIP_ID_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, chip_id, 1, QMC5883L_TIMEOUT_MS));
 }
 
 
@@ -521,7 +466,8 @@ int32_t qmc5883l_get_azimuth(qmc5883l_conf_t qmc)
 void qmc5883l_read_magnetometer(qmc5883l_conf_t qmc, float* x, float* y, float* z)
 {
     uint8_t data[6];
-    i2c_read(qmc, QMC_DATA_OUT_X_LSB_REG, data, 6);
+    uint8_t reg = QMC_DATA_OUT_X_LSB_REG;
+    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, data, 6, QMC5883L_TIMEOUT_MS));
 
     int16_t x_raw, y_raw, z_raw;
     x_raw = (int16_t)data[1] << 8 | (int16_t)data[0];

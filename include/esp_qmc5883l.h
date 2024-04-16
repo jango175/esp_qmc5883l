@@ -12,7 +12,7 @@
 #include "freertos/task.h"
 #include "freertos/queue.h"
 #include "driver/gpio.h"
-#include "driver/i2c.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 // #define QMC5883L_I2C_INIT            1 // uncomment to initialize I2C driver
@@ -29,7 +29,7 @@
 
 // I2C configuration values
 #define QMC5883L_MAX_FREQ            400000
-#define QMC5883L_TIMEOUT             (100 / portTICK_PERIOD_MS)
+#define QMC5883L_TIMEOUT_MS          100
 #define QMC5883L_ADDR                0x0D
 
 // register map
