@@ -465,14 +465,8 @@ int32_t qmc5883l_get_azimuth(qmc5883l_conf_t qmc)
 */
 void qmc5883l_read_magnetometer(qmc5883l_conf_t qmc, float* x, float* y, float* z)
 {
-    uint8_t data[6];
-    uint8_t reg = QMC_DATA_OUT_X_LSB_REG;
-    ESP_ERROR_CHECK(i2c_master_transmit_receive(dev_handle, &reg, 1, data, 6, QMC5883L_TIMEOUT_MS));
-
     int16_t x_raw, y_raw, z_raw;
-    x_raw = (int16_t)data[1] << 8 | (int16_t)data[0];
-    y_raw = (int16_t)data[3] << 8 | (int16_t)data[2];
-    z_raw = (int16_t)data[5] << 8 | (int16_t)data[4];
+    qmc5883l_read_raw_magnetometer(qmc, &x_raw, &y_raw, &z_raw);
 
     *x = ((float)x_raw - QMC5883L_X_OFFSET) * QMC5883L_X_SCALE;
     *y = ((float)y_raw - QMC5883L_Y_OFFSET) * QMC5883L_Y_SCALE;
