@@ -6,4 +6,4 @@
 * Interrupt mode is still untested.
 
 ## Sources
-* https://datasheet.lcsc.com/lcsc/QST-QMC5883L-TR_C192585.pdf
+* http://wiki.sunfounder.cc/images/7/72/QMC5883L-Datasheet-1.0.pdf
