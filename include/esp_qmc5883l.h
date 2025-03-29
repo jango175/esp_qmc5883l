@@ -29,7 +29,7 @@
 
 // I2C configuration values
 #define QMC5883L_MAX_FREQ            400000
-#define QMC5883L_TIMEOUT_MS          100
+#define QMC5883L_TIMEOUT_MS          2
 #define QMC5883L_ADDR                0x0D
 
 // register map
